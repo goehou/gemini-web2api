@@ -1,0 +1,18 @@
+[project]
+name = "gemini-web2api"
+version = "1.1.0"
+description = "Convert Google Gemini web into OpenAI-compatible API"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+streaming = ["httpx>=0.25"]
+
+[project.scripts]
+gemini-web2api = "gemini_web2api.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
