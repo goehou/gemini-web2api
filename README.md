@@ -225,10 +225,19 @@ The model selection is controlled by field `[79]` in the request payload, mapped
 
 ## Acknowledgments
 
-- [GenericAgent](https://github.com/lsdefine/GenericAgent) — 本项目核心开发依仗 GA 提供的 AI 能力
-- [linux.do](https://linux.do) community
 - Inspired by the open-source API proxy ecosystem
 
 ## License
 
 MIT
+
+---
+
+## 致谢
+
+本项目的开发 agent 能力由 [GenericAgent](https://github.com/lsdefine/GenericAgent) 提供。
+
+### 🚩 友情链接
+
+[![GenericAgent](https://img.shields.io/badge/Agent_Framework-GenericAgent-orange?style=for-the-badge&logo=github)](https://github.com/lsdefine/GenericAgent)
+[![LinuxDo](https://img.shields.io/badge/社区-LinuxDo-blue?style=for-the-badge)](https://linux.do/)
