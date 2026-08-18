@@ -7,7 +7,7 @@ from unittest import mock
 from urllib.parse import parse_qs
 
 from gemini_web2api.config import CONFIG, DEFAULT_CONFIG
-from gemini_web2api.gemini import _build_payload
+from gemini_web2api.gemini import _build_payload, _next_proxy
 from gemini_web2api.server import GeminiHandler, ThreadedServer
 from gemini_web2api.tools import google_contents_to_prompt, messages_to_prompt
 
@@ -66,6 +66,23 @@ class PayloadPersistenceTests(unittest.TestCase):
 
         self.assertEqual(inner[0][0], "describe")
         self.assertEqual(inner[0][3], [[None, None, "/uploaded/image-ref"]])
+
+
+class ProxyRotationTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = dict(CONFIG)
+        CONFIG["proxy_pool"] = ["http://proxy-a", "http://proxy-b"]
+
+    def tearDown(self):
+        CONFIG.clear()
+        CONFIG.update(self.original_config)
+
+    def test_proxy_pool_rotates_round_robin(self):
+        first = _next_proxy()
+        second = _next_proxy()
+        third = _next_proxy()
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, third)
 
 
 class MessageParsingTests(unittest.TestCase):

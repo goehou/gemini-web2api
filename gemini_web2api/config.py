@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "log_requests": True,
     "cookie_file": None,
     "proxy": None,
+    "proxy_pool": [],
     "api_keys": [],
     "temporary_chats": False,
 }
