@@ -13,6 +13,7 @@
   ],
   "cookie_file": null,
   "proxy": null,
+  "proxy_pool": [],
   "log_requests": true,
   "temporary_chats": false
 }

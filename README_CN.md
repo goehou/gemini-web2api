@@ -213,6 +213,18 @@ python gemini_web2api.py --proxy http://127.0.0.1:7890
 {"proxy": "http://127.0.0.1:7890"}
 ```
 
+如果有多个 HTTP/HTTPS 代理，可使用 `proxy_pool`。每次请求和重试会按轮询
+顺序选择代理；列表为空时回退到 `proxy` 或直连。
+
+```json
+{
+  "proxy_pool": [
+    "http://user:password@proxy-a.example:8080",
+    "http://user:password@proxy-b.example:8080"
+  ]
+}
+```
+
 **方式 3: 环境变量** (自动检测)
 ```bash
 set HTTPS_PROXY=http://127.0.0.1:7890

@@ -8,6 +8,7 @@ import urllib.parse
 import ssl
 import os
 import hashlib
+import threading
 
 try:
     import httpx
@@ -19,7 +20,9 @@ from .config import CONFIG
 
 _ssl_ctx = None
 _cookie_cache = {"str": "", "sapisid": None, "mtime": 0}
-_httpx_client = None
+_httpx_clients = {}
+_proxy_lock = threading.Lock()
+_proxy_index = 0
 
 
 def log(msg: str):
@@ -36,13 +39,33 @@ def _get_ssl_ctx():
     return _ssl_ctx
 
 
-def _get_httpx_client():
-    global _httpx_client
-    if _httpx_client is None and HAS_HTTPX:
-        proxy = CONFIG.get("proxy")
+def _proxy_candidates():
+    pool = CONFIG.get("proxy_pool") or []
+    if isinstance(pool, str):
+        pool = [pool]
+    pool = [p.strip() for p in pool if isinstance(p, str) and p.strip()]
+    return pool or ([CONFIG["proxy"]] if CONFIG.get("proxy") else [None])
+
+
+def _next_proxy():
+    """Round-robin proxy selection; None means direct connection."""
+    global _proxy_index
+    candidates = _proxy_candidates()
+    with _proxy_lock:
+        proxy = candidates[_proxy_index % len(candidates)]
+        _proxy_index += 1
+    return proxy
+
+
+def _get_httpx_client(proxy):
+    if not HAS_HTTPX:
+        return None
+    if proxy not in _httpx_clients:
         transport = httpx.HTTPTransport(proxy=proxy) if proxy else None
-        _httpx_client = httpx.Client(transport=transport, timeout=CONFIG["request_timeout_sec"], verify=True)
-    return _httpx_client
+        _httpx_clients[proxy] = httpx.Client(
+            transport=transport, timeout=CONFIG["request_timeout_sec"], verify=True
+        )
+    return _httpx_clients[proxy]
 
 
 def load_cookie() -> tuple:
@@ -208,10 +231,9 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
     url = _get_url()
     headers = _build_headers()
     ctx = _get_ssl_ctx()
-    proxy = CONFIG.get("proxy")
-
     last_err = None
     for attempt in range(CONFIG["retry_attempts"]):
+        proxy = _next_proxy()
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             if proxy:
@@ -223,7 +245,10 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
             else:
                 resp = urllib.request.urlopen(req, context=ctx, timeout=CONFIG["request_timeout_sec"])
             raw = resp.read().decode("utf-8", errors="replace")
-            return extract_response_text(raw)
+            text = extract_response_text(raw)
+            if not text:
+                raise RuntimeError("Gemini upstream returned an empty response")
+            return text
         except Exception as e:
             last_err = e
             if attempt < CONFIG["retry_attempts"] - 1:
@@ -243,11 +268,11 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
     body = _build_payload(prompt, model_id, think_mode, file_refs, extra_fields)
     url = _get_url()
     headers = _build_headers()
-    client = _get_httpx_client()
-
     last_err = None
     emitted_raw_text = ""
     for attempt in range(CONFIG["retry_attempts"]):
+        proxy = _next_proxy()
+        client = _get_httpx_client(proxy)
         try:
             with client.stream("POST", url, content=body, headers=headers) as resp:
                 resp.raise_for_status()
@@ -271,6 +296,8 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
                             emitted_raw_text = t
                             if delta:
                                 yield delta
+            if not emitted_raw_text:
+                raise RuntimeError("Gemini upstream returned an empty response")
             return
         except Exception as e:
             last_err = e

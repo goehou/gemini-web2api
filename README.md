@@ -223,6 +223,19 @@ python gemini_web2api.py --proxy http://127.0.0.1:7890
 {"proxy": "http://127.0.0.1:7890"}
 ```
 
+For multiple HTTP/HTTPS proxies, use `proxy_pool`. Requests and retries rotate
+through the entries in round-robin order; an empty pool falls back to `proxy`
+or a direct connection.
+
+```json
+{
+  "proxy_pool": [
+    "http://user:password@proxy-a.example:8080",
+    "http://user:password@proxy-b.example:8080"
+  ]
+}
+```
+
 **Method 3: Environment variable** (auto-detected)
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
