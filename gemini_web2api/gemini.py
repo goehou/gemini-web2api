@@ -245,7 +245,10 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
             else:
                 resp = urllib.request.urlopen(req, context=ctx, timeout=CONFIG["request_timeout_sec"])
             raw = resp.read().decode("utf-8", errors="replace")
-            return extract_response_text(raw)
+            text = extract_response_text(raw)
+            if not text:
+                raise RuntimeError("Gemini upstream returned an empty response")
+            return text
         except Exception as e:
             last_err = e
             if attempt < CONFIG["retry_attempts"] - 1:
@@ -293,6 +296,8 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
                             emitted_raw_text = t
                             if delta:
                                 yield delta
+            if not emitted_raw_text:
+                raise RuntimeError("Gemini upstream returned an empty response")
             return
         except Exception as e:
             last_err = e
