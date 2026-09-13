@@ -194,6 +194,11 @@ def extract_response_text(raw: str) -> str:
     bard_err = re.search(r'BardErrorInfo\s*\[(\d+)\]', raw)
     if bard_err:
         raise RuntimeError(f"Gemini upstream rejected request: BardErrorInfo [{bard_err.group(1)}]")
+    # ponytail: regex probe — backend echoes actual model name (e.g. "3.5 Flash-Lite");
+    # may miss if backend renames formats, check raw response then.
+    m = re.search(r'"(\d\.\d (?:Flash(?:-Lite)?|Thinking|Pro))', raw)
+    if m:
+        log(f"actual model from response: {m.group(1)}")
     last_text = ""
     for line in raw.split("\n"):
         for t in _extract_texts_from_line(line):
