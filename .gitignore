@@ -10,3 +10,4 @@ cookie.json
 .DS_Store
 gemini-auth.json
 *.sqlite3
+*_freq.json

@@ -21,6 +21,7 @@ DEFAULT_CONFIG = {
     "auto_cache": True,
     "api_keys": [],
     "temporary_chats": False,
+    "session_hashes": {},
 }
 
 CONFIG = dict(DEFAULT_CONFIG)

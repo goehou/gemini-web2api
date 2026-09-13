@@ -85,7 +85,7 @@ def _account_prefix() -> str:
     return f"/u/{auth_user}"
 
 
-def _build_headers() -> dict:
+def _build_headers(session_hash: str = None) -> dict:
     account_prefix = _account_prefix()
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -101,7 +101,18 @@ def _build_headers() -> dict:
         headers["Cookie"] = cookie_str
     if sapisid:
         headers["Authorization"] = make_sapisidhash(sapisid)
+    if session_hash:
+        # ponytail: x-goog-ext-525001261-jspb idx4 hash binds the request to the
+        # model the user picked in the web UI (payload [79] is ignored upstream).
+        # Server-side state, may expire with the web session; re-capture then.
+        headers["x-goog-ext-525001261-jspb"] = json.dumps(
+            [1, None, None, None, session_hash] + [None] * 13)
     return headers
+
+
+def _session_hash(model_name: str):
+    """Per-model session hash from config, captured from the web UI request headers."""
+    return (CONFIG.get("session_hashes") or {}).get(model_name)
 
 
 def _apply_chat_persistence_flags(inner: list) -> None:
@@ -207,11 +218,11 @@ def extract_response_text(raw: str) -> str:
     return clean_text(last_text)
 
 
-def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None, extra_fields: dict = None) -> str:
+def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None, extra_fields: dict = None, session_hash: str = None) -> str:
     """Non-streaming generation with retry."""
     body = _build_payload(prompt, model_id, think_mode, file_refs, extra_fields).encode()
     url = _get_url()
-    headers = _build_headers()
+    headers = _build_headers(session_hash)
     ctx = _get_ssl_ctx()
     proxy = CONFIG.get("proxy")
 
@@ -237,17 +248,17 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
     raise last_err
 
 
-def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list = None, extra_fields: dict = None):
+def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list = None, extra_fields: dict = None, session_hash: str = None):
     """Streaming generation via httpx with retry on connection failure."""
     if not HAS_HTTPX:
-        text = generate(prompt, model_id, think_mode, file_refs, extra_fields)
+        text = generate(prompt, model_id, think_mode, file_refs, extra_fields, session_hash)
         if text:
             yield text
         return
 
     body = _build_payload(prompt, model_id, think_mode, file_refs, extra_fields)
     url = _get_url()
-    headers = _build_headers()
+    headers = _build_headers(session_hash)
     client = _get_httpx_client()
 
     last_err = None
