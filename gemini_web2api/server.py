@@ -11,6 +11,7 @@ from .models import MODELS, resolve_model
 from .gemini import generate, generate_stream, log
 from .tools import messages_to_prompt, parse_tool_calls, google_contents_to_prompt, parse_google_function_calls
 from .multimodal import detect_image_mime, fetch_image_bytes, upload_image
+from .cache import CACHE
 from . import __version__
 
 
@@ -18,6 +19,31 @@ def _usage(prompt: str, text: str) -> dict:
     p = len(prompt) // 4
     c = len(text or "") // 4
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
+
+
+def _cached_tokens(messages: list, tools=None, tool_choice=None) -> int:
+    """Estimate tokens contributed by a locally cached message prefix."""
+    if not messages:
+        return 0
+    cached_prompt, _ = messages_to_prompt(messages, tools, tool_choice)
+    return len(cached_prompt) // 4
+
+
+def _auto_cache_prefix(messages: list) -> list:
+    prefix = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "system":
+            break
+        prefix.append(message)
+    if prefix:
+        return prefix
+    # For multi-turn requests, preserve all prior turns and leave the current
+    # user message uncached so each new question remains dynamic.
+    return messages[:-1] if len(messages) > 1 else []
+
+
+def _cache_scope(handler) -> str:
+    return handler.headers.get("Authorization", "") or handler.client_address[0]
 
 
 def _upload_images(images: list) -> list:
@@ -118,7 +144,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
 
@@ -131,8 +157,15 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self.send_json({"object": "list", "data": [
                     {"id": n, "object": "model", "created": 1700000000,
                      "owned_by": "google", "description": c["desc"]}
-                    for n, c in MODELS.items()
+                     for n, c in MODELS.items()
                 ]})
+            elif self.path.startswith("/v1/caches/"):
+                cache_id = self.path.rsplit("/", 1)[-1]
+                cached = CACHE.get(cache_id)
+                if not cached:
+                    self.send_json({"error": {"message": "cache not found"}}, 404)
+                    return
+                self.send_json({"object": "cache", **cached})
             elif self.path.startswith("/v1beta/models"):
                 self.send_json({"models": [
                     {"name": f"models/{n}", "displayName": n, "description": c["desc"],
@@ -154,6 +187,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             body = self._read_request_body()
             if self.path == "/v1/chat/completions":
                 self._handle_chat(body)
+            elif self.path == "/v1/caches":
+                self._handle_cache_create(body)
             elif self.path == "/v1/responses":
                 self._handle_responses(body)
             elif ":streamGenerateContent" in self.path:
@@ -171,6 +206,31 @@ class GeminiHandler(BaseHTTPRequestHandler):
             except:
                 pass
 
+    def do_DELETE(self):
+        if not self.path.startswith("/v1/caches/"):
+            self.send_json({"error": "not found"}, 404)
+            return
+        if not self._authorized():
+            self.send_json({"error": {"message": "invalid api key"}}, 401)
+            return
+        cache_id = self.path.rsplit("/", 1)[-1]
+        if not CACHE.delete(cache_id):
+            self.send_json({"error": {"message": "cache not found"}}, 404)
+            return
+        self.send_json({"id": cache_id, "deleted": True})
+
+    def _handle_cache_create(self, body: bytes):
+        req = self._parse_body(body)
+        messages = req.get("messages") if req else None
+        if not isinstance(messages, list) or not messages:
+            self.send_json({"error": {"message": "messages must be a non-empty array"}}, 400)
+            return
+        ttl = req.get("ttl_seconds", CONFIG["cache_default_ttl_sec"])
+        if not isinstance(ttl, int) or ttl < 1 or ttl > CONFIG["cache_max_ttl_sec"]:
+            self.send_json({"error": {"message": "invalid ttl_seconds"}}, 400)
+            return
+        self.send_json({"object": "cache", **CACHE.create(messages, ttl)}, 201)
+
     # ─── /v1/chat/completions ─────────────────────────────────────────────────
 
     def _handle_chat(self, body: bytes):
@@ -184,9 +244,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.send_json({"error": {"message": err}}, 400)
             return
 
+        messages = req.get("messages", [])
+        cache_id = req.get("cache_id")
+        cached = CACHE.get(cache_id) if cache_id else None
+        prefix = _auto_cache_prefix(messages)
+        if not cache_id and CONFIG.get("auto_cache") and prefix:
+            cached = CACHE.get_or_create_auto(prefix, CONFIG["cache_default_ttl_sec"], _cache_scope(self))
+            cache_id = cached["id"]
+        if cached:
+            if prefix and cached["messages"] == prefix:
+                messages = cached["messages"] + messages[len(prefix):]
+            else:
+                messages = cached["messages"] + messages
+        elif req.get("cache_id"):
+            self.send_json({"error": {"message": "cache not found"}}, 404)
+            return
         tools = req.get("tools")
         tool_choice = req.get("tool_choice", "auto")
-        prompt, images = messages_to_prompt(req.get("messages", []), tools, tool_choice)
+        prompt, images = messages_to_prompt(messages, tools, tool_choice)
+        cached_tokens = _cached_tokens(cached["messages"], tools, tool_choice) if cache_id else 0
         if not prompt.strip():
             self.send_json({"error": {"message": "empty prompt"}}, 400)
             return
@@ -215,7 +291,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 }
                 self.wfile.write(f"data: {json.dumps(first_chunk)}\n\n".encode())
                 self.wfile.flush()
+                stream_text = ""
                 for delta in generate_stream(prompt, model_id, think_mode, file_refs, extra_fields):
+                    stream_text += delta
                     chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                              "model": model_name, "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}]}
                     self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
@@ -223,6 +301,14 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 end = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                        "model": model_name, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
                 self.wfile.write(f"data: {json.dumps(end)}\n\n".encode())
+                usage_chunk = {
+                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                    "model": model_name, "choices": [],
+                    "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(stream_text)//4,
+                               "total_tokens": (len(prompt)+len(stream_text))//4,
+                               "prompt_tokens_details": {"cached_tokens": cached_tokens}},
+                }
+                self.wfile.write(f"data: {json.dumps(usage_chunk)}\n\n".encode())
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
@@ -250,6 +336,14 @@ class GeminiHandler(BaseHTTPRequestHandler):
             chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                      "model": model_name, "choices": [{"index": 0, "delta": msg, "finish_reason": finish}]}
             self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
+            usage_chunk = {
+                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                "model": model_name, "choices": [],
+                "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text or "")//4,
+                           "total_tokens": (len(prompt)+len(text or ""))//4,
+                           "prompt_tokens_details": {"cached_tokens": cached_tokens}},
+            }
+            self.wfile.write(f"data: {json.dumps(usage_chunk)}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         else:
@@ -258,7 +352,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 "model": model_name,
                 "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
                 "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text or "")//4,
-                          "total_tokens": (len(prompt)+len(text or ""))//4},
+                          "total_tokens": (len(prompt)+len(text or ""))//4,
+                          "prompt_tokens_details": {"cached_tokens": cached_tokens}},
             })
 
     # ─── /v1/responses (Codex CLI) ───────────────────────────────────────────
@@ -313,12 +408,28 @@ class GeminiHandler(BaseHTTPRequestHandler):
                         role = item.get("role", "user")
                         messages.append({"role": role, "content": item.get("content", "")})
 
+        cache_id = req.get("cache_id")
+        cached = CACHE.get(cache_id) if cache_id else None
+        prefix = _auto_cache_prefix(messages)
+        if not cache_id and CONFIG.get("auto_cache") and prefix:
+            cached = CACHE.get_or_create_auto(prefix, CONFIG["cache_default_ttl_sec"], _cache_scope(self))
+            cache_id = cached["id"]
+        if cached:
+            if prefix and cached["messages"] == prefix:
+                messages = cached["messages"] + messages[len(prefix):]
+            else:
+                messages = cached["messages"] + messages
+        elif req.get("cache_id"):
+            self.send_json({"error": {"message": "cache not found"}}, 404)
+            return
+
         if tools:
             tools = [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t.get("parameters", {})}}
                      if t.get("type") == "function" and "function" not in t else t for t in tools]
 
         tool_choice = req.get("tool_choice", "auto")
         prompt, images = messages_to_prompt(messages, tools, tool_choice)
+        cached_tokens = _cached_tokens(cached["messages"], tools, tool_choice) if cache_id else 0
         if not prompt.strip():
             self.send_json({"error": {"message": "empty input"}}, 400)
             return
@@ -365,6 +476,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 "input_tokens": len(prompt) // 4,
                 "output_tokens": len(text or "") // 4,
                 "total_tokens": (len(prompt) + len(text or "")) // 4,
+                "input_tokens_details": {"cached_tokens": cached_tokens},
             }
             base_response = {
                 "id": rid,
@@ -483,7 +595,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
         else:
             self.send_json({"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
                             "model": model_name, "output": output,
-                            "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4, "total_tokens": (len(prompt)+len(text or ""))//4}})
+                            "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4,
+                                      "total_tokens": (len(prompt)+len(text or ""))//4,
+                                      "input_tokens_details": {"cached_tokens": cached_tokens}}})
 
     # ─── /v1beta/models (Google Gemini CLI) ──────────────────────────────────
 

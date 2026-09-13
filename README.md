@@ -185,6 +185,15 @@ persisting conversations to the account history.
 
 When `api_keys` is `[]`, authentication is disabled. When one or more keys are set, `/v1/*` endpoints require `Authorization: Bearer <key>` or `x-api-key: <key>`.
 
+### Context Cache
+
+The proxy provides local SQLite-backed context caching. Create a cache with
+`POST /v1/caches`, then pass its `cache_id` in Chat Completions or Responses
+requests. With `auto_cache` enabled, stable system context and prior turns in
+multi-turn requests are cached automatically. Cache usage is reported as the
+estimated `usage.prompt_tokens_details.cached_tokens` field; this is proxy-side
+accounting and is not an upstream Gemini billing value.
+
 ## Docker
 
 ```bash

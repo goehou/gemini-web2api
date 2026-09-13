@@ -175,6 +175,14 @@ Pro 路由需要 **Gemini Advanced** (付费订阅). 免费 Google 账号的 coo
 
 `api_keys` 为空数组 `[]` 时不校验密钥；填入一个或多个密钥后, `/v1/*` 接口需要 `Authorization: Bearer <key>` 或 `x-api-key: <key>`.
 
+### 上下文缓存
+
+服务提供基于 SQLite 的本地上下文缓存。通过 `POST /v1/caches` 创建缓存，
+然后在 Chat Completions 或 Responses 请求中传入 `cache_id`。开启
+`auto_cache` 后，稳定的系统上下文和多轮请求中的历史对话会自动缓存。
+缓存 Token 通过 `usage.prompt_tokens_details.cached_tokens` 估算返回；这是代理
+侧统计，不是 Gemini 上游的计费数据。
+
 ## Docker 部署
 
 ```bash

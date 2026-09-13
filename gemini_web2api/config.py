@@ -15,6 +15,10 @@ DEFAULT_CONFIG = {
     "log_requests": True,
     "cookie_file": None,
     "proxy": None,
+    "cache_db_path": "./gemini-web2api-cache.sqlite3",
+    "cache_default_ttl_sec": 3600,
+    "cache_max_ttl_sec": 604800,
+    "auto_cache": True,
     "api_keys": [],
     "temporary_chats": False,
 }

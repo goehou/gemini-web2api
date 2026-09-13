@@ -1,12 +1,15 @@
 import http.client
 import base64
 import json
+import os
+import tempfile
 import threading
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs
 
 from gemini_web2api.config import CONFIG, DEFAULT_CONFIG
+from gemini_web2api.cache import CACHE
 from gemini_web2api.gemini import _build_payload
 from gemini_web2api.server import GeminiHandler, ThreadedServer
 from gemini_web2api.tools import google_contents_to_prompt, messages_to_prompt
@@ -66,6 +69,26 @@ class PayloadPersistenceTests(unittest.TestCase):
 
         self.assertEqual(inner[0][0], "describe")
         self.assertEqual(inner[0][3], [[None, None, "/uploaded/image-ref"]])
+
+
+class ContextCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = dict(CONFIG)
+        self.tmpdir = tempfile.TemporaryDirectory()
+        CONFIG["cache_db_path"] = os.path.join(self.tmpdir.name, "cache.sqlite3")
+
+    def tearDown(self):
+        CONFIG.clear()
+        CONFIG.update(self.original_config)
+        self.tmpdir.cleanup()
+
+    def test_context_cache_create_read_and_delete(self):
+        item = CACHE.create([{"role": "system", "content": "cached context"}], 60)
+
+        cached = CACHE.get(item["id"])
+        self.assertEqual(cached["messages"][0]["content"], "cached context")
+        self.assertTrue(CACHE.delete(item["id"]))
+        self.assertIsNone(CACHE.get(item["id"]))
 
 
 class MessageParsingTests(unittest.TestCase):

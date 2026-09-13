@@ -9,3 +9,4 @@ cookie.json
 .idea
 .DS_Store
 gemini-auth.json
+*.sqlite3

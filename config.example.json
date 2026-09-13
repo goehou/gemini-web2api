@@ -13,6 +13,10 @@
   ],
   "cookie_file": null,
   "proxy": null,
+  "cache_db_path": "./gemini-web2api-cache.sqlite3",
+  "cache_default_ttl_sec": 3600,
+  "cache_max_ttl_sec": 604800,
+  "auto_cache": true,
   "log_requests": true,
   "temporary_chats": false
 }
