@@ -30,6 +30,47 @@ python gemini_web2api.py
 
 服务启动在 `http://localhost:8081/v1`.
 
+## 双端口链路 (匿名 + Cookie)
+
+可以同时跑两个实例, 各占一个端口: 一条匿名路, 一条带 cookie 路.
+
+建两个配置文件 (参考 `.env.example`),
+
+`.env.anon` (无鉴权):
+
+```
+PORT=8081
+```
+
+`.env.cookie` (带 cookie):
+
+```
+PORT=8082
+COOKIE_FILE=cookie.txt
+```
+
+一条命令启动两个端口:
+
+```bash
+python start_all.py
+```
+
+| 端口 | 配置文件 | 路由行为 |
+|------|---------|---------|
+| 8081 | `.env.anon` | 匿名, 所有模型路由到 Flash-Lite |
+| 8082 | `.env.cookie` | cookie 认证, 模型类别真实生效 |
+
+客户端指向 8081 走匿名, 指向 8082 走认证, 互不干扰. 启动 banner 会显示 `Env file:` 和 `Cookie: yes/none (anonymous)`, 可确认实例身份.
+
+也可以分别启动:
+
+```bash
+python -m gemini_web2api --env-file .env.anon
+python -m gemini_web2api --env-file .env.cookie
+```
+
+> 注意: `COOKIE_FILE` 指向的文件不存在时, 实例会静默以匿名模式运行, 不会报错. Cookie 配置见下文.
+
 ## 客户端配置
 
 ### Cherry Studio / ChatBox / 任何 OpenAI 兼容客户端
@@ -97,31 +138,63 @@ gemini-3.5-flash-thinking@think=2   # 中等
 gemini-3.5-flash-thinking@think=4   # 最浅
 ```
 
-## 可选: Cookie 配置 (Pro 模型)
+## Cookie 配置 (详细)
 
-匿名访问对所有模型有效, 但 `gemini-3.1-pro` 在无认证时会路由到 Flash. 要获得真正的 Pro 路由, 需要 **Gemini Advanced (付费订阅)** 账号的 cookie:
+### 为什么要配 Cookie
+
+模型选择通过请求 payload 的 `[79]` 字段把"模型类别"发给 Gemini 服务端, 但**匿名请求下服务端会无视类别号, 所有模型统一路由到 Flash-Lite** (实测确认). 配置 cookie 后类别号才被服务端采用:
+
+- `gemini-3.8-flash` / `gemini-3.6-flash` (FAST 类别) → 路由到账号 FAST 档位当前挂载的模型
+- `gemini-3.1-pro` (PRO 类别) → 免费 Google 账号会静默回退到 Flash, 需要 **Gemini Advanced (付费订阅)** 才有真 Pro 路由
+- 没有官方的无鉴权 API: Gemini API 免费层需要 Google 账号 + AI Studio 的 key, 匿名只有网页端的基础档
+
+### 方式一: 仓库自带浏览器扩展 (推荐)
+
+扩展一次性导出 cookie + SAPISID + XSRF token + gemini_bl, 比手动全:
+
+1. Chrome 打开 `chrome://extensions` → 开启右上角**开发者模式** → **加载已解压的扩展程序** → 选择本仓库的 `gemini-cookie-sync-extension` 目录
+2. 打开 [gemini.google.com/app](https://gemini.google.com/app), 登录 Google 账号, 刷新页面
+3. 点扩展图标 → **Inspect session**, 确认显示:
+
+   ```
+   XSRF / SNlM0e: present
+   gemini_bl / cfb2h: present
+   ```
+
+4. 点 **Export gemini-auth.json**, 得到包含 cookie、`sapisid`、`xsrf_token`、`gemini_bl`、`auth_user` 的完整认证文件
+5. `config.json` 中设置 `"cookie_file": "gemini-auth.json"
+
+> `gemini.google.com` 的 `bl` 版本号会随部署更新, 扩展导出的 `gemini_bl` 是当前值, 比手填更可靠.
+
+### 方式二: 手动从 DevTools 提取
+
+1. Chrome 访问 [gemini.google.com](https://gemini.google.com) 并登录, 按 **F12** 打开开发者工具
+2. **Application (应用)** 标签 → 左侧 **Cookies** → `https://gemini.google.com`
+3. 复制以下 cookie 的值:
+
+   | Cookie | 作用 |
+   |--------|------|
+   | `SID` / `HSID` / `SSID` | Google 登录态 |
+   | `APISID` / `SAPISID` | API 鉴权 (SAPISID 同时用于 sapisidhash) |
+   | `__Secure-1PSID` | 会话凭证 |
+
+4. 项目根目录创建 `cookie.txt`, JSON 格式:
+
+```json
+{"cookie": "SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx", "sapisid": "SAPISID的值"}
+```
+
+或纯文本单行格式:
+
+```
+SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx
+```
+
+启动方式:
 
 ```bash
 python gemini_web2api.py --cookie-file cookie.txt
 ```
-
-### 如何获取 Cookie
-
-1. 打开 Chrome, 访问 [gemini.google.com](https://gemini.google.com) 并登录 **Gemini Advanced** 付费账号
-2. 打开开发者工具 (F12) → Application → Cookies → `https://gemini.google.com`
-3. 复制以下 cookie 值: `SID`, `HSID`, `SSID`, `APISID`, `SAPISID`, `__Secure-1PSID`
-4. 创建 `cookie.txt`, 格式如下:
-
-```
-SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值; SAPISID=你的SAPISID值; __Secure-1PSID=你的1PSID值
-```
-
-或使用 JSON 格式:
-```json
-{"cookie": "SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx", "sapisid": "你的SAPISID值"}
-```
-
-**替代方案 (浏览器扩展)**: 使用任意 "Export Cookies" 扩展导出 `gemini.google.com` 的 cookie, 然后转换为上述单行格式.
 
 ### 登录账号路径与 XSRF Token
 
@@ -147,6 +220,25 @@ https://gemini.google.com/u/1/app/...
 如果登录态请求返回 HTTP 400 且错误中包含 `xsrf`, 请刷新 Gemini Web 后更新 `xsrf_token`, 并确认 `auth_user` 与浏览器 URL 中的 `/u/<序号>/` 一致.
 
 Pro 路由需要 **Gemini Advanced** (付费订阅). 免费 Google 账号的 cookie 可以登录认证, 但会静默回退到 Flash.
+
+### 验证路由是否生效
+
+启动带 cookie 的实例后发一条请求, 看服务日志:
+
+```bash
+curl http://localhost:8082/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
+  -d '{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"hi"}]}'
+```
+
+服务日志会输出后端实际路由的模型名:
+
+```
+[xx:xx:xx] actual model from response: 3.X Flash
+```
+
+显示的就是 FAST 档位真实挂载的模型. 如果仍是 `3.5 Flash-Lite`, 检查 cookie 文件路径与登录态是否有效.
 
 ## 配置文件
 

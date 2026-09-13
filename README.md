@@ -30,6 +30,47 @@ python gemini_web2api.py
 
 Server starts at `http://localhost:8081/v1`.
 
+## Dual-Port Setup (Anonymous + Cookie)
+
+You can run two instances side by side, each on its own port: one anonymous, one with a cookie.
+
+Create two config files (see `.env.example`),
+
+`.env.anon` (anonymous):
+
+```
+PORT=8081
+```
+
+`.env.cookie` (with cookie):
+
+```
+PORT=8082
+COOKIE_FILE=cookie.txt
+```
+
+Start both ports with one command:
+
+```bash
+python start_all.py
+```
+
+| Port | Config | Routing behavior |
+|------|--------|------------------|
+| 8081 | `.env.anon` | Anonymous, all models route to Flash-Lite |
+| 8082 | `.env.cookie` | Cookie auth, model categories take effect |
+
+Point clients at 8081 for anonymous, 8082 for authenticated — the two don't interfere. The startup banner prints `Env file:` and `Cookie: yes/none (anonymous)` so you can tell instances apart.
+
+Or start them separately:
+
+```bash
+python -m gemini_web2api --env-file .env.anon
+python -m gemini_web2api --env-file .env.cookie
+```
+
+> Note: if the file `COOKIE_FILE` points to does not exist, the instance silently runs in anonymous mode without erroring. See Cookie configuration below.
+
 ## Client Configuration
 
 ### Cherry Studio / ChatBox / any OpenAI client
@@ -107,31 +148,63 @@ gemini-3.5-flash-thinking@think=2   # medium
 gemini-3.5-flash-thinking@think=4   # shallowest
 ```
 
-## Optional: Cookie for Pro
+## Cookie Configuration (Detailed)
 
-Anonymous access works for all models, but `gemini-3.1-pro` routes to Flash without authentication. To get real Pro routing, you need a **Gemini Advanced (paid subscription)** account cookie:
+### Why a cookie is needed
+
+Model selection sends a "model category" to the Gemini backend via the `[79]` field of the request payload, but **for anonymous requests the backend ignores the category and routes every model to Flash-Lite** (verified by testing). With a cookie, the category is honored:
+
+- `gemini-3.8-flash` / `gemini-3.6-flash` (FAST category) → routes to whatever the account's FAST tier currently serves
+- `gemini-3.1-pro` (PRO category) → free Google accounts silently fall back to Flash; **Gemini Advanced (paid subscription)** is required for real Pro routing
+- There is no official unauthenticated API: the free Gemini API tier requires a Google account + AI Studio key; anonymous access is only the web chat's basic tier
+
+### Method 1: bundled browser extension (recommended)
+
+The extension exports cookie + SAPISID + XSRF token + gemini_bl in one go:
+
+1. Open `chrome://extensions` in Chrome → enable **Developer mode** → **Load unpacked** → select the `gemini-cookie-sync-extension` directory from this repo
+2. Open [gemini.google.com/app](https://gemini.google.com/app), sign in to your Google account, refresh the page
+3. Click the extension icon → **Inspect session**, and confirm it shows:
+
+   ```
+   XSRF / SNlM0e: present
+   gemini_bl / cfb2h: present
+   ```
+
+4. Click **Export gemini-auth.json** — you get a complete auth file with cookie, `sapisid`, `xsrf_token`, `gemini_bl`, and `auth_user`
+5. Set `"cookie_file": "gemini-auth.json"` in `config.json`
+
+> The `bl` version of gemini.google.com changes with deployments; the exported `gemini_bl` is the current value and more reliable than hand-filling.
+
+### Method 2: manual extraction from DevTools
+
+1. Open [gemini.google.com](https://gemini.google.com), sign in, press **F12** to open DevTools
+2. **Application** tab → **Cookies** in the sidebar → `https://gemini.google.com`
+3. Copy these cookies:
+
+   | Cookie | Purpose |
+   |--------|---------|
+   | `SID` / `HSID` / `SSID` | Google sign-in state |
+   | `APISID` / `SAPISID` | API auth (SAPISID is also used for sapisidhash) |
+   | `__Secure-1PSID` | Session credential |
+
+4. Create `cookie.txt` in the project root, JSON format:
+
+```json
+{"cookie": "SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx", "sapisid": "your SAPISID value"}
+```
+
+Or the plain single-line format:
+
+```
+SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx
+```
+
+Start with:
 
 ```bash
 python gemini_web2api.py --cookie-file cookie.txt
 ```
-
-### How to get cookies
-
-1. Open Chrome, go to [gemini.google.com](https://gemini.google.com) and sign in with a **Gemini Advanced** Google account
-2. Open DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. Copy these cookie values: `SID`, `HSID`, `SSID`, `APISID`, `SAPISID`, `__Secure-1PSID`
-4. Create `cookie.txt` in this format:
-
-```
-SID=your_sid_value; HSID=your_hsid_value; SSID=your_ssid_value; APISID=your_apisid_value; SAPISID=your_sapisid_value; __Secure-1PSID=your_1psid_value
-```
-
-Or use the JSON format:
-```json
-{"cookie": "SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx", "sapisid": "your_sapisid_value"}
-```
-
-**Alternative (browser extension)**: Use any "Export Cookies" extension to export cookies for `gemini.google.com` in Netscape format, then convert to the single-line format above.
 
 ### Authenticated account path and XSRF token
 
@@ -157,6 +230,25 @@ Example:
 If authenticated requests return HTTP 400 with an `xsrf` error, refresh Gemini Web, update `xsrf_token`, and make sure `auth_user` matches the `/u/<index>/` part of the browser URL.
 
 Pro routing requires **Gemini Advanced** (paid subscription). A free Google account cookie will authenticate but silently fall back to Flash.
+
+### Verify the routing takes effect
+
+After starting the cookie instance, send a request and check the server log:
+
+```bash
+curl http://localhost:8082/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
+  -d '{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"hi"}]}'
+```
+
+The server log prints the model name the backend actually routed to:
+
+```
+[xx:xx:xx] actual model from response: 3.X Flash
+```
+
+That is the model really served by the FAST tier. If it still shows `3.5 Flash-Lite`, check the cookie file path and whether the session is still valid.
 
 ## Configuration
 
