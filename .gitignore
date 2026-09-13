@@ -4,8 +4,8 @@ config.json
 cookie.txt
 cookie.json
 .env
-!.env.example
 .env.*
+!.env.example
 .idea
 .DS_Store
 gemini-auth.json
